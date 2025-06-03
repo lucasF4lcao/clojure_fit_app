@@ -1,4 +1,4 @@
-(ns fit.calorias
+(ns fit.alimentos
   (:require [clj-http.client :as http]
             [clojure.data.json :as json]))
 
