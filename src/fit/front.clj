@@ -74,15 +74,16 @@
 
 (defn registrarExercicio []
   (let [nome (lerString "Nome do exercicio:")
-        calorias (lerInt "Calorias gastas:")
-        data (lerString "Data (yyyy-MM-dd) [enter para hoje]:")]
-    (let [exercicio (cond-> {:nome nome :calorias calorias}
-                            (not (str/blank? data)) (assoc :data data))
-          resposta (http/post (str baseUrl "/exercicio")
-                              {:body (json/write-str exercicio)
-                               :headers {"Content-Type" "application/json"}
-                               :as :json})]
-      (println "Resposta:" (:body resposta)))))
+        duracao (lerInt "Duracao em minutos:")
+        data (lerString "Data (yyyy-MM-dd) [enter para hoje]:")
+        exercicio (cond-> {:nome nome :duracao duracao}
+                          (not (str/blank? data)) (assoc :data data))
+        resposta (http/post (str baseUrl "/exercicio")
+                            {:body (json/write-str exercicio)
+                             :headers {"Content-Type" "application/json"}
+                             :as :json})]
+    (println "Resposta:" (:body resposta))))
+
 
 (defn consultarExtrato []
   (let [dataInicio (lerString "Data inicio (yyyy-MM-dd) [enter para ignorar]:")

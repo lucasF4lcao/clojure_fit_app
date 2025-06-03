@@ -6,7 +6,8 @@
     [compojure.route :as route]
     [clj-time.core :as t]
     [clj-time.format :as f]
-    [clojure.string :as str]))
+    [clojure.string :as str]
+    [fit.exercicios :as ex]))
 
 (def state (atom {:usuarios '()
                   :alimentos '()
@@ -62,9 +63,17 @@
     {:status 201 :body {:msg "Alimento registrado"}}))
 
 (defn registrarExercicio [exercicio]
-  (let [exercicioComData (withData exercicio)]
-    (swap! state update :exercicios conj exercicioComData)
-    {:status 201 :body {:msg "Exercicio registrado"}}))
+  (let [{:keys [nome duracao data]} exercicio
+        calorias (ex/caloriasQueimadas nome duracao)
+        exercicio-completo (-> {:nome nome
+                                :duracao duracao
+                                :calorias calorias}
+                               (cond-> data (assoc :data data))
+                               withData)]
+    (swap! state update :exercicios conj exercicio-completo)
+    {:status 201 :body {:msg "Exercício registrado com sucesso"
+                        :calorias calorias}}))
+
 
 (defn filtrarPorPeriodo [registros dataInicio dataFim]
   (filter
