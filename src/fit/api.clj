@@ -8,111 +8,109 @@
     [clj-time.format :as f]
     [clojure.string :as str]))
 
+
 (def state (atom {:usuarios '()
                   :alimentos '()
                   :exercicios '()}))
 
-(def dateFormatter (f/formatter "yyyy-MM-dd"))
+(def date-formatter (f/formatter "yyyy-MM-dd"))
 
-(defn parseDate [s]
-  (try (f/parse dateFormatter s)
+(defn parse-date [s]
+  (try (f/parse date-formatter s)
        (catch Exception _ nil)))
 
-(defn todayStr []
-  (f/unparse dateFormatter (t/now)))
+(defn today-str []
+  (f/unparse date-formatter (t/now)))
 
-(defn withData [m]
+(defn with-data [m]
   (if (contains? m :data)
     m
-    (assoc m :data (todayStr))))
+    (assoc m :data (today-str))))
 
-(defn usuarioExiste? [id]
+;; ---------- USUÁRIO ----------
+(defn usuario-existe? [id]
   (some #(= id (:id %)) (:usuarios @state)))
 
-(defn registrarUsuario [usuario]
+(defn registrar-usuario [usuario]
   (let [{:keys [id senha altura peso idade sexo]} usuario]
     (cond
       (or (str/blank? id) (str/blank? senha))
-      {:status 400 :body {:erro "id e senha sao obrigatorios"}}
+      {:status 400 :body {:erro "ID e senha são obrigatórios"}}
 
-      (usuarioExiste? id)
-      {:status 409 :body {:erro "id já esta em uso"}}
+      (usuario-existe? id)
+      {:status 409 :body {:erro "ID já está em uso"}}
 
       :else
-      (let [usuarioCompleto (assoc (dissoc usuario :data) :id id :senha senha)]
-        (swap! state update :usuarios conj usuarioCompleto)
+      (let [usuario-completo (assoc (dissoc usuario :data) :id id :senha senha)]
+        (swap! state update :usuarios conj usuario-completo)
         {:status 201 :body {:msg "Usuário registrado com sucesso"}}))))
 
 (defn login [credenciais]
   (let [{:keys [id senha]} credenciais
         usuario (some #(when (= id (:id %)) %) (:usuarios @state))]
     (if (and usuario (= senha (:senha usuario)))
-      {:status 200 :body {:msg "login feito com sucesso"}}
-      {:status 401 :body {:erro "id ou senha invalidos"}})))
+      {:status 200 :body {:msg "Login bem-sucedido"}}
+      {:status 401 :body {:erro "ID ou senha inválidos"}})))
 
-(defn consultarUsuario [id]
+(defn consultar-usuario [id]
   (let [usuario (some #(when (= id (:id %)) %) (:usuarios @state))]
     (if usuario
       {:status 200 :body (dissoc usuario :senha)}
-      {:status 404 :body {:erro "usuario nao foi encontrado"}})))
+      {:status 404 :body {:erro "Usuário não encontrado"}})))
 
-(defn registrarAlimento [alimento]
-  (let [{:keys [usuario-id]} alimento]
-    (if (not (usuarioExiste? usuario-id))
-      {:status 400 :body {:erro "usuario não existe"}}
-      (let [alimentoComData (withData alimento)]
-        (swap! state update :alimentos conj alimentoComData)
-        {:status 201 :body {:msg "alimento registrado"}}))))
+;; ---------- ALIMENTOS / EXERCÍCIOS ----------
+(defn registrar-alimento [alimento]
+  (let [alimento-com-data (with-data alimento)]
+    (swap! state update :alimentos conj alimento-com-data)
+    {:status 201 :body {:msg "Alimento registrado"}}))
 
-(defn registrarExercicio [exercicio]
-  (let [{:keys [usuario-id]} exercicio]
-    (if (not (usuarioExiste? usuario-id))
-      {:status 400 :body {:erro "usuario não existe"}}
-      (let [exercicioComData (withData exercicio)]
-        (swap! state update :exercicios conj exercicioComData)
-        {:status 201 :body {:msg "exercicio registrado"}}))))
+(defn registrar-exercicio [exercicio]
+  (let [exercicio-com-data (with-data exercicio)]
+    (swap! state update :exercicios conj exercicio-com-data)
+    {:status 201 :body {:msg "Exercicio registrado"}}))
 
-(defn filtrarPorUsuarioEPeriodo [registros usuario-id dataInicio dataFim]
+(defn filtrar-por-periodo [registros data-inicio data-fim]
   (filter
-    (fn [{:keys [usuario-id data]}]
-      (and (= usuario-id usuario-id)
-           (let [d (parseDate data)
-                 dInicio (parseDate dataInicio)
-                 dFim (parseDate dataFim)]
-             (and d
-                  (or (not dInicio) (not (t/before? d dInicio)))
-                  (or (not dFim) (not (t/after? d dFim)))))))
+    (fn [{:keys [data]}]
+      (let [d (parse-date data)
+            d-inicio (parse-date data-inicio)
+            d-fim (parse-date data-fim)]
+        (and d
+             (or (not d-inicio) (not (t/before? d d-inicio)))
+             (or (not d-fim) (not (t/after? d d-fim))))))
     registros))
 
-(defn extrato [usuario-id dataInicio dataFim]
+(defn extrato [data-inicio data-fim]
   (let [{:keys [alimentos exercicios]} @state
-        alimentosFiltrados (filtrarPorUsuarioEPeriodo alimentos usuario-id dataInicio dataFim)
-        exerciciosFiltrados (filtrarPorUsuarioEPeriodo exercicios usuario-id dataInicio dataFim)]
+        alimentos-filtrados (filtrar-por-periodo alimentos data-inicio data-fim)
+        exercicios-filtrados (filtrar-por-periodo exercicios data-inicio data-fim)]
     {:status 200
-     :body {:alimentos alimentosFiltrados
-            :exercicios exerciciosFiltrados}}))
+     :body {:alimentos alimentos-filtrados
+            :exercicios exercicios-filtrados}}))
 
-;; Saldo filtrado por usuario e periodo
-(defn saldo [usuario-id dataInicio dataFim]
+(defn saldo [data-inicio data-fim]
   (let [{:keys [alimentos exercicios]} @state
-        alimentosFiltrados (filtrarPorUsuarioEPeriodo alimentos usuario-id dataInicio dataFim)
-        exerciciosFiltrados (filtrarPorUsuarioEPeriodo exercicios usuario-id dataInicio dataFim)
-        caloriasConsumidas (reduce + (map :calorias alimentosFiltrados))
-        caloriasGastas (reduce + (map :calorias exerciciosFiltrados))]
+        alimentos-filtrados (filtrar-por-periodo alimentos data-inicio data-fim)
+        exercicios-filtrados (filtrar-por-periodo exercicios data-inicio data-fim)
+        calorias-consumidas (reduce + (map :calorias alimentos-filtrados))
+        calorias-gastas (reduce + (map :calorias exercicios-filtrados))]
     {:status 200
-     :body {:saldo (- caloriasConsumidas caloriasGastas)}}))
+     :body {:saldo (- calorias-consumidas calorias-gastas)}}))
 
-(defroutes appRoutes
-           (POST "/usuario" req (registrarUsuario (:body req)))
+;; ---------- ROTAS ----------
+(defroutes app-routes
+           ;; Usuário
+           (POST "/usuario" req (registrar-usuario (:body req)))
            (POST "/login" req (login (:body req)))
-           (GET "/usuario/:id" [id] (consultarUsuario id))
+           (GET "/usuario/:id" [id] (consultar-usuario id))
 
-           (POST "/alimento" req (registrarAlimento (:body req)))
-           (POST "/exercicio" req (registrarExercicio (:body req)))
+           ;; Registros
+           (POST "/alimento" req (registrar-alimento (:body req)))
+           (POST "/exercicio" req (registrar-exercicio (:body req)))
 
-           (GET "/extrato" [usuario-id dataInicio dataFim] (extrato usuario-id dataInicio dataFim))
-           (GET "/saldo" [usuario-id dataInicio dataFim] (saldo usuario-id dataInicio dataFim))
-
+           ;; Consulta
+           (GET "/extrato" [data-inicio data-fim] (extrato data-inicio data-fim))
+           (GET "/saldo" [data-inicio data-fim] (saldo data-inicio data-fim))
            (GET "/debug/state" []
              {:status 200
               :body @state})
@@ -120,7 +118,7 @@
            (route/not-found {:status 404 :body {:error "Not found"}}))
 
 (def app
-  (-> appRoutes
+  (-> app-routes
       (wrap-json-body {:keywords? true})
       wrap-json-response))
 
