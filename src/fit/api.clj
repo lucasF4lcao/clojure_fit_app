@@ -7,7 +7,8 @@
     [clj-time.core :as t]
     [clj-time.format :as f]
     [clojure.string :as str]
-    [fit.exercicios :as ex]))
+    [fit.exercicios :as ex]
+    [fit.alimentos :as ali]))
 
 (def state (atom {:usuarios '()
                   :alimentos '()
@@ -57,22 +58,35 @@
       {:status 200 :body (dissoc usuario :senha)}
       {:status 404 :body {:erro "Usuario nao encontrado"}})))
 
-(defn registrarAlimento [alimento]
-  (let [alimentoComData (withData alimento)]
-    (swap! state update :alimentos conj alimentoComData)
-    {:status 201 :body {:msg "Alimento registrado"}}))
 
-(defn registrarExercicio [exercicio]
-  (let [{:keys [nome duracao data]} exercicio
-        calorias (ex/caloriasQueimadas nome duracao)
-        exercicio-completo (-> {:nome nome
-                                :duracao duracao
-                                :calorias calorias}
-                               (cond-> data (assoc :data data))
-                               withData)]
-    (swap! state update :exercicios conj exercicio-completo)
-    {:status 201 :body {:msg "Exercício registrado com sucesso"
-                        :calorias calorias}}))
+(defn registrarAlimento [dados]
+  (let [{:keys [id descricao quantidade indice]} dados
+        alimentos (ali/buscar-calorias descricao)
+        alimento (nth alimentos indice nil)]
+    (if (and alimento quantidade)
+      (let [calorias (ali/calcular-calorias alimento quantidade)
+            registro {:id id
+                      :descricao (:descricao alimento)
+                      :quantidade quantidade
+                      :calorias calorias
+                      :data (todayStr)}]
+        (swap! state update :alimentos conj registro)
+        {:status 201 :body {:msg "Alimento registrado com sucesso" :registro registro}})
+      {:status 400 :body {:erro "Descricao, indice ou quantidade invalida"}})))
+
+(defn registrarExercicio [dados]
+  (let [{:keys [id atividade duracao indice]} dados
+        opcoes (ex/calorias-queimadas atividade duracao)
+        opcao (nth opcoes indice nil)]
+    (if (and opcao (:total_calories opcao))
+      (let [registro {:id id
+                      :atividade (:name opcao)
+                      :duracao duracao
+                      :calorias (:total_calories opcao)
+                      :data (todayStr)}]
+        (swap! state update :exercicios conj registro)
+        {:status 201 :body {:msg "Exercicio registrado com sucesso" :registro registro}})
+      {:status 400 :body {:erro "Atividade invalida ou nao encontrada"}})))
 
 
 (defn filtrarPorPeriodo [registros dataInicio dataFim]
@@ -86,22 +100,35 @@
              (or (not dFim) (not (t/after? d dFim))))))
     registros))
 
-(defn extrato [dataInicio dataFim]
+(defn extrato [data-inicio data-fim]
   (let [{:keys [alimentos exercicios]} @state
-        alimentosFiltrados (filtrarPorPeriodo alimentos dataInicio dataFim)
-        exerciciosFiltrados (filtrarPorPeriodo exercicios dataInicio dataFim)]
+        alimentosFiltrados (filtrarPorPeriodo alimentos data-inicio data-fim)
+        exerciciosFiltrados (filtrarPorPeriodo exercicios data-inicio data-fim)]
     {:status 200
      :body {:alimentos alimentosFiltrados
             :exercicios exerciciosFiltrados}}))
 
-(defn saldo [dataInicio dataFim]
+(defn extrair-kcal [caloria-str]
+  (try
+    (if (string? caloria-str)
+      (let [match (re-find #"([\d]+[.,]?[\d]*)\s*kcal" caloria-str)]
+        (if-let [valor (second match)]
+          (Double/parseDouble (str/replace valor "," "."))
+          0.0))
+      (double caloria-str)) ; já é número
+    (catch Exception _ 0.0)))
+
+
+(defn saldo [data-inicio data-fim]
   (let [{:keys [alimentos exercicios]} @state
-        alimentosFiltrados (filtrarPorPeriodo alimentos dataInicio dataFim)
-        exerciciosFiltrados (filtrarPorPeriodo exercicios dataInicio dataFim)
-        caloriasConsumidas (reduce + (map :calorias alimentosFiltrados))
+        alimentosFiltrados (filtrarPorPeriodo alimentos data-inicio data-fim)
+        exerciciosFiltrados (filtrarPorPeriodo exercicios data-inicio data-fim)
+        caloriasConsumidas (reduce + (map #(extrair-kcal (:calorias %)) alimentosFiltrados))
         caloriasGastas (reduce + (map :calorias exerciciosFiltrados))]
     {:status 200
-     :body {:saldo (- caloriasConsumidas caloriasGastas)}}))
+     :body {:saldo (format "%.2f"(- caloriasConsumidas caloriasGastas))}}))
+
+
 
 (defroutes appRoutes
            (POST "/usuario" req (registrarUsuario (:body req)))
@@ -111,8 +138,8 @@
            (POST "/alimento" req (registrarAlimento (:body req)))
            (POST "/exercicio" req (registrarExercicio (:body req)))
 
-           (GET "/extrato" [dataInicio dataFim] (extrato dataInicio dataFim))
-           (GET "/saldo" [dataInicio dataFim] (saldo dataInicio dataFim))
+           (GET "/extrato" [data-inicio data-fim] (extrato data-inicio data-fim))
+           (GET "/saldo" [data-inicio data-fim] (saldo data-inicio data-fim))
            (GET "/debug/state" []
              {:status 200
               :body @state})

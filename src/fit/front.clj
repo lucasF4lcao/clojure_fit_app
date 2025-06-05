@@ -1,7 +1,9 @@
 (ns fit.front
   (:require [clj-http.client :as http]
             [clojure.data.json :as json]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [fit.alimentos :as ali]
+            [fit.exercicios :as ex]))
 
 (def baseUrl "http://localhost:3000")
 
@@ -59,31 +61,52 @@
         resposta (http/get (str baseUrl "/usuario/" id) {:as :json})]
     (println "Usuario atual:" (:body resposta))))
 
+(defn haUsuarioRegistrado? []
+  (let [resposta (http/get (str baseUrl "/debug/state") {:as :json})
+        usuarios (:usuarios (:body resposta))]
+    (not (empty? usuarios))))
+
 
 (defn registrarAlimento []
-  (let [nome (lerString "Nome do alimento:")
-        calorias (lerInt "Calorias:")
-        data (lerString "Data (yyyy-MM-dd) [enter para hoje]:")]
-    (let [alimento (cond-> {:nome nome :calorias calorias}
-                           (not (str/blank? data)) (assoc :data data))
-          resposta (http/post (str baseUrl "/alimento")
-                              {:body (json/write-str alimento)
-                               :headers {"Content-Type" "application/json"}
-                               :as :json})]
-      (println "Resposta:" (:body resposta)))))
+  (let [descricao (lerString "Nome do alimento:")
+        alimentos (ali/buscar-calorias descricao)]
+    (if (empty? alimentos)
+      (println "Nenhum alimento encontrado.")
+      (do
+        (doseq [[i a] (map-indexed vector alimentos)]
+          (println (str i " - " (:descricao a) " | " (:calorias a) " | " (:quantidade a))))
+        (let [indice (lerInt "Escolha o número do alimento:")
+              quantidade (lerFloat "Informe a quantidade (em gramas):")
+              id (:id @sessao)
+              payload {:id id :descricao descricao :indice indice :quantidade quantidade}
+              resposta (http/post (str baseUrl "/alimento")
+                                  {:body (json/write-str payload)
+                                   :headers {"Content-Type" "application/json"}
+                                   :as :json})]
+          (println "Resposta:" (:body resposta)))))))
+
 
 (defn registrarExercicio []
-  (let [nome (lerString "Nome do exercicio:")
+  (let [atividade (lerString "Nome da atividade:")
         duracao (lerInt "Duracao em minutos:")
-        data (lerString "Data (yyyy-MM-dd) [enter para hoje]:")
-        exercicio (cond-> {:nome nome :duracao duracao}
-                          (not (str/blank? data)) (assoc :data data))
-        resposta (http/post (str baseUrl "/exercicio")
-                            {:body (json/write-str exercicio)
-                             :headers {"Content-Type" "application/json"}
-                             :as :json})]
-    (println "Resposta:" (:body resposta))))
-
+        opcoes (try (ex/calorias-queimadas atividade duracao)
+                    (catch Exception _ []))]
+    (if (nil? opcoes)
+      (println "Erro ao buscar atividade.")
+      (do
+        (let [indice (if (sequential? opcoes)
+                       (do
+                         (doseq [[i op] (map-indexed vector opcoes)]
+                           (println (str i " - " (:name op) " | " (:total_calories op) " kcal")))
+                         (lerInt "Escolha o numero do exercicio:"))
+                       0)
+              id (:id @sessao)
+              payload {:id id :atividade atividade :duracao duracao :indice indice}
+              resposta (http/post (str baseUrl "/exercicio")
+                                  {:body (json/write-str payload)
+                                   :headers {"Content-Type" "application/json"}
+                                   :as :json})]
+          (println "Resposta:" (:body resposta)))))))
 
 (defn consultarExtrato []
   (let [dataInicio (lerString "Data inicio (yyyy-MM-dd) [enter para ignorar]:")
