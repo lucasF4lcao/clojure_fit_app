@@ -1,182 +1,150 @@
 (ns fit.front
-  (:require [clj-http.client :as http]
-            [clojure.data.json :as json]
-            [clojure.string :as str]
-            [fit.alimentos :as ali]
-            [fit.exercicios :as ex]))
+  (:require [clj-http.client :as client]
+            [clojure.edn :as edn]
+            [cheshire.core :as json]
+            [clj-time.core :as t]
+            [clj-time.format :as f]))
 
-(def baseUrl "http://localhost:3000")
+(def api-url "http://localhost:3000")
 
-(def sessao (atom nil))
+(defn ler-numero []
+  (Integer/parseInt (read-line)))
 
-(defn lerString [prompt]
-  (println prompt)
-  (flush)
-  (read-line))
+(defn obter-data-hoje []
+  (let [formatter (f/formatter "yyyy-MM-dd")]
+    (f/unparse formatter (t/now))))
 
-(defn lerInt [prompt]
-  (Integer/parseInt (lerString prompt)))
+(defn usuario-existe? []
+  (let [resp (client/get (str api-url "/usuario") {:as :json})]
+    (get-in resp [:body :existe])))
 
-(defn lerFloat [prompt]
-  (Double/parseDouble (lerString prompt)))
+(defn cadastrar-usuario []
+  (println "Nenhum usuario cadastrado. Faca seu cadastro.")
+  (print "Nome: ") (flush)
+  (let [nome (read-line)]
+    (print "Idade: ") (flush)
+    (let [idade (Integer/parseInt (read-line))]
+      (print "Sexo (M/F): ") (flush)
+      (let [sexo (read-line)]
+        (print "Altura (cm): ") (flush)
+        (let [altura (Double/parseDouble (read-line))]
+          (print "Peso (kg): ") (flush)
+          (let [peso (Double/parseDouble (read-line))]
+            (let [usuario {:nome nome :idade idade :sexo sexo :altura altura :peso peso}
+                  resp (client/post (str api-url "/usuario")
+                                    {:body (json/generate-string usuario)
+                                     :headers {"Content-Type" "application/json"}
+                                     :throw-exceptions false
+                                     :as :json})]
+              (if (= 201 (:status resp))
+                (println "Cadastro realizado com sucesso!")
+                (println "Erro no cadastro:" (get-in resp [:body :erro]))))))))))
 
-
-(defn cadastrarUsuario []
-  (let [id (lerString "ID do usuario:")
-        senha (lerString "Senha:")
-        altura (lerFloat "Altura (m):")
-        peso (lerFloat "Peso (kg):")
-        idade (lerInt "Idade:")
-        sexo (lerString "Sexo (m/f):")]
-    (let [usuario {:id id
-                   :senha senha
-                   :altura altura
-                   :peso peso
-                   :idade idade
-                   :sexo sexo}
-          resposta (http/post (str baseUrl "/usuario")
-                              {:body (json/write-str usuario)
-                               :headers {"Content-Type" "application/json"}
-                               :as :json})]
-      (println "Resposta:" (:body resposta)))))
-
-(defn login []
-  (let [id (lerString "ID:")
-        senha (lerString "Senha:")
-        credenciais {:id id :senha senha}
-        resposta (http/post (str baseUrl "/login")
-                            {:body (json/write-str credenciais)
-                             :headers {"Content-Type" "application/json"}
-                             :throw-exceptions false
-                             :as :json})]
-    (if (= 200 (:status resposta))
-      (do (reset! sessao {:id id})
-          (println "Login feito com sucesso")
-          true)
-      (do (println "Falha no login:" (:body resposta))
-          false))))
-
-(defn consultarUsuario []
-  (let [id (:id @sessao)
-        resposta (http/get (str baseUrl "/usuario/" id) {:as :json})]
-    (println "Usuario atual:" (:body resposta))))
-
-(defn haUsuarioRegistrado? []
-  (let [resposta (http/get (str baseUrl "/debug/state") {:as :json})
-        usuarios (:usuarios (:body resposta))]
-    (not (empty? usuarios))))
+(defn mostrar-usuario []
+  (let [resp (client/get (str api-url "/usuario") {:as :json})]
+    (if (:existe (:body resp))
+      (println "Usuario cadastrado:" (pr-str (:usuario (:body resp))))
+      (println "Nenhum usuario cadastrado."))))
 
 
-(defn registrarAlimento []
-  (let [descricao (lerString "Nome do alimento:")
-        alimentos (ali/buscar-calorias descricao)]
-    (if (empty? alimentos)
-      (println "Nenhum alimento encontrado.")
+(defn registrar-alimento []
+  (println "Digite o nome do alimento:")
+  (let [descricao (read-line)
+        resp (client/post "http://localhost:3000/alimento"
+                          {:headers {"Content-Type" "application/json"}
+                           :body (json/generate-string {:descricao descricao})
+                           :as :json})
+        opcoes (get-in resp [:body :opcoes])]
+
+    (if (empty? opcoes)
+      (println "Nenhuma opção encontrada.")
       (do
-        (doseq [[i a] (map-indexed vector alimentos)]
-          (println (str i " - " (:descricao a) " | " (:calorias a) " | " (:quantidade a))))
-        (let [indice (lerInt "Escolha o número do alimento:")
-              quantidade (lerFloat "Informe a quantidade (em gramas):")
-              id (:id @sessao)
-              payload {:id id :descricao descricao :indice indice :quantidade quantidade}
-              resposta (http/post (str baseUrl "/alimento")
-                                  {:body (json/write-str payload)
-                                   :headers {"Content-Type" "application/json"}
-                                   :as :json})]
-          (println "Resposta:" (:body resposta)))))))
+        ;; Mostrar opções
+        (println "Escolha uma opção:")
+        (doseq [{:keys [id descricao quantidade calorias]} opcoes]
+          (println (str id ") " descricao " - " quantidade " - " calorias)))
+
+        (let [opcao (ler-numero)]
+          (println "Digite a gramatura (em gramas):")
+          (let [gramas (Double/parseDouble (read-line))
+                resp2 (client/post "http://localhost:3000/alimento"
+                                   {:headers {"Content-Type" "application/json"}
+                                    :body (json/generate-string {:descricao descricao
+                                                                 :opcao opcao
+                                                                 :gramas gramas})
+                                    :as :json})
+                body2 (:body resp2)]
+            (println "Alimento registrado:")
+            (println body2)))))))
 
 
-(defn registrarExercicio []
-  (let [atividade (lerString "Nome da atividade:")
-        duracao (lerInt "Duracao em minutos:")
-        opcoes (try (ex/calorias-queimadas atividade duracao)
-                    (catch Exception _ []))]
-    (if (nil? opcoes)
-      (println "Erro ao buscar atividade.")
+
+(defn registrar-exercicio []
+  (println "Digite o nome do exercício:")
+  (let [atividade (read-line)
+        resp (client/post "http://localhost:3000/exercicio"
+                          {:headers {"Content-Type" "application/json"}
+                           :body (json/generate-string {:atividade atividade})
+                           :as :json})
+        opcoes (get-in resp [:body :opcoes])]
+
+    (if (empty? opcoes)
+      (println "Nenhuma opção encontrada.")
       (do
-        (let [indice (if (sequential? opcoes)
-                       (do
-                         (doseq [[i op] (map-indexed vector opcoes)]
-                           (println (str i " - " (:name op) " | " (:total_calories op) " kcal")))
-                         (lerInt "Escolha o numero do exercicio:"))
-                       0)
-              id (:id @sessao)
-              payload {:id id :atividade atividade :duracao duracao :indice indice}
-              resposta (http/post (str baseUrl "/exercicio")
-                                  {:body (json/write-str payload)
-                                   :headers {"Content-Type" "application/json"}
-                                   :as :json})]
-          (println "Resposta:" (:body resposta)))))))
+        ;; Mostrar opções
+        (println "Escolha uma opção:")
+        (doseq [{:keys [id nome calorias]} opcoes]
+          (println (str id ") " nome " - " calorias " kcal/h")))
 
-(defn consultarExtrato []
-  (let [dataInicio (lerString "Data inicio (yyyy-MM-dd) [enter para ignorar]:")
-        dataFim (lerString "Data fim (yyyy-MM-dd) [enter para ignorar]:")
-        query (->> [["data-inicio" dataInicio]
-                    ["data-fim" dataFim]]
-                   (filter (fn [[_ v]] (not (str/blank? v))))
-                   (map (fn [[k v]] (str k "=" v)))
-                   (str/join "&"))
-        url (str baseUrl "/extrato" (when (seq query) (str "?" query)))
-        resposta (http/get url {:as :json})]
-    (println "Extrato:" (:body resposta))))
+        (let [opcao (ler-numero)]
+          (println "Digite a duração (em minutos):")
+          (let [duracao (Double/parseDouble (read-line))
+                resp2 (client/post "http://localhost:3000/exercicio"
+                                   {:headers {"Content-Type" "application/json"}
+                                    :body (json/generate-string {:atividade atividade
+                                                           :opcao opcao
+                                                           :duracao duracao})
+                                    :as :json})
+                body2 (:body resp2)]
+            (println "Exercício registrado:")
+            (println body2)))))))
 
-(defn consultarSaldo []
-  (let [dataInicio (lerString "Data inicio (yyyy-MM-dd) [enter para ignorar]:")
-        dataFim (lerString "Data fim (yyyy-MM-dd) [enter para ignorar]:")
-        query (->> [["data-inicio" dataInicio]
-                    ["data-fim" dataFim]]
-                   (filter (fn [[_ v]] (not (str/blank? v))))
-                   (map (fn [[k v]] (str k "=" v)))
-                   (str/join "&"))
-        url (str baseUrl "/saldo" (when (seq query) (str "?" query)))
-        resposta (http/get url {:as :json})]
-    (println "Saldo de calorias:" (:saldo (:body resposta)))))
 
-(defn haUsuarioRegistrado? []
-  (let [resposta (http/get (str baseUrl "/debug/state") {:as :json})
-        usuarios (:usuarios (:body resposta))]
-    (not (empty? usuarios))))
+(defn ver-extrato []
+  (let [resp (client/get (str api-url "/extrato") {:as :json})
+        {:keys [alimentos exercicios]} (:body resp)]
+    (println "\n--- Alimentos ---")
+    (doseq [{:keys [descricao gramas calorias]} alimentos]
+      (println (str "- " descricao ", " gramas "g, " (format "%.2f" calorias) " kcal")))
+    (println "\n--- Exercícios ---")
+    (doseq [{:keys [atividade duracao calorias]} exercicios]
+      (println (str "- " atividade ", " duracao " min, " (format "%.2f" calorias) " kcal")))))
 
 
 (defn menu []
   (loop []
-    (println "\n--- Menu Fit CLI ---")
-    (println "1 - Consultar usuario")
-    (println "2 - Registrar alimento")
-    (println "3 - Registrar exercicio")
-    (println "4 - Consultar extrato")
-    (println "5 - Consultar saldo")
+    (println "\n--- Menu Principal ---")
+    (println "1 - Ver informacoes do usuario")
+    (println "2 - Registrar alimento consumido")
+    (println "3 - Registrar exercicio realizado")
+    (println "4 - Ver extrato")
+    (println "5 - Ver saldo de calorias")
     (println "0 - Sair")
-    (print "Escolha uma opcao: ")
-    (flush)
+    (print "Escolha uma opcao: ") (flush)
     (case (read-line)
-      "1" (do (consultarUsuario) (recur))
-      "2" (do (registrarAlimento) (recur))
-      "3" (do (registrarExercicio) (recur))
-      "4" (do (consultarExtrato) (recur))
-      "5" (do (consultarSaldo) (recur))
-      "0" (println "Tchau!")
-      (do (println "Opcao invalida.") (recur)))))
-
-(defn telaInicial []
-  (if (haUsuarioRegistrado?)
-    (loop []
-      (println "\n--- Bem-vindo ao Fit CLI ---")
-      (println "1 - Login")
-      (println "0 - Sair")
-      (print "Escolha uma opcao: ")
-      (flush)
-      (case (read-line)
-        "1" (if (login)
-              (menu)
-              (recur))
-        "0" (println "Tchau!")
-        (do (println "Opcao invalida.") (recur))))
-    (do
-      (println "\n--- Nenhum usuario registrado ---")
-      (cadastrarUsuario)
-      (println "Agora faca login...")
-      (telaInicial))))
+      "1" (do (mostrar-usuario) (recur))
+      "2" (do (registrar-alimento) (recur))
+      "3" (do (registrar-exercicio) (recur))
+      "4" (do (ver-extrato) (recur))
+      ;"5" (do (ver-saldo) (recur))
+      "0" (println "Saindo...")
+      (do (println "Opcao invalida!") (recur)))))
 
 (defn -main []
-  (telaInicial))
+  (if (usuario-existe?)
+    (do
+      (println "Bem Vindo!")
+      (menu))
+    (do
+      (cadastrar-usuario)
+      (menu))))

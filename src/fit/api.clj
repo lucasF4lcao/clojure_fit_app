@@ -1,155 +1,208 @@
 (ns fit.api
-  (:require
-    [ring.adapter.jetty :refer [run-jetty]]
-    [ring.middleware.json :refer [wrap-json-body wrap-json-response]]
-    [compojure.core :refer [defroutes GET POST]]
-    [compojure.route :as route]
-    [clj-time.core :as t]
-    [clj-time.format :as f]
-    [clojure.string :as str]
-    [fit.exercicios :as ex]
-    [fit.alimentos :as ali]))
+  (:require [compojure.core :refer :all]
+            [compojure.route :as route]
+            [ring.adapter.jetty :as jetty]
+            [ring.middleware.json :refer [wrap-json-body wrap-json-response]]
+            [cheshire.core :as json]
+            [clj-http.client :as client]
+            [clojure.string :as str]))
 
-(def state (atom {:usuarios '()
-                  :alimentos '()
-                  :exercicios '()}))
+;; --------------------------
+;; Estado da aplicação (em memória)
+;; --------------------------
+(def usuario (atom nil))
+(def alimentos (atom []))
+(def exercicios (atom []))
 
-(def dateFormatter (f/formatter "yyyy-MM-dd"))
+;; --------------------------
+;; Endpoints de usuário
+;; --------------------------
+(defn registrar-usuario [req]
+  (let [dados (:body req)]
+    (if @usuario
+      {:status 400 :body {:erro "Usuário já cadastrado."}}
+      (do
+        (reset! usuario dados)
+        {:status 201 :body {:mensagem "Usuário cadastrado com sucesso."}}))))
 
-(defn parseDate [s]
-  (try (f/parse dateFormatter s)
-       (catch Exception _ nil)))
+;; --------------------------
+;; Alimentos
+;; --------------------------
 
-(defn todayStr []
-  (f/unparse dateFormatter (t/now)))
+(defn buscar-calorias [descricao]
+  (let [url (str "https://caloriasporalimentoapi.herokuapp.com/api/calorias/?descricao="
+                 (java.net.URLEncoder/encode descricao "UTF-8"))
+        resposta (client/get url {:headers {"Accept" "application/json"}})
+        corpo (:body resposta)
+        dados (json/parse-string corpo true)]
+    dados))
 
-(defn withData [m]
-  (if (contains? m :data)
-    m
-    (assoc m :data (todayStr))))
+(defn parse-kcal [kcal-str]
+  (Double/parseDouble (str/replace kcal-str #"[^0-9.]" "")))
 
-(defn usuarioExiste? [id]
-  (some #(= id (:id %)) (:usuarios @state)))
+(defn extrair-gramas [quant-str]
+  (let [m (re-find #"\((\d+) g\)" quant-str)]
+    (if m
+      (Double/parseDouble (second m))
+      nil)))
 
-(defn registrarUsuario [usuario]
-  (let [{:keys [id senha altura peso idade sexo]} usuario]
+(defn registrar-alimento [req]
+  (let [{:keys [descricao gramas opcao]} (:body req)
+        resultados (buscar-calorias descricao)]
+
     (cond
-      (or (str/blank? id) (str/blank? senha))
-      {:status 400 :body {:erro "ID e senha sao obrigatorios"}}
+      ;; Se não houver resultados
+      (empty? resultados)
+      {:status 404 :body {:erro "Nenhum alimento encontrado com essa descrição."}}
 
-      (usuarioExiste? id)
-      {:status 409 :body {:erro "ID ja esta em uso"}}
+      ;; Etapa 1: só descrição, retorna opções ao usuário
+      (and descricao (nil? gramas) (nil? opcao))
+      {:status 200
+       :body {:opcoes (map-indexed (fn [idx item]
+                                     {:id idx
+                                      :descricao (:descricao item)
+                                      :quantidade (:quantidade item)
+                                      :calorias (:calorias item)})
+                                   resultados)}}
+
+      ;; Etapa 2: descrição, id da opção escolhida e gramas
+      (and (some? gramas) (some? opcao))
+      (let [idx (Integer/parseInt (str opcao))
+            item (nth resultados idx nil)]
+        (if item
+          (let [descricao (:descricao item)
+                calorias-totais (parse-kcal (:calorias item))
+                gramas-totais (extrair-gramas (:quantidade item))]
+            (if (and calorias-totais gramas-totais (pos? gramas-totais))
+              (let [calorias-por-grama (/ calorias-totais gramas-totais)
+                    calorias-ajustada (* calorias-por-grama gramas)
+                    registro {:descricao descricao
+                              :gramas gramas
+                              :calorias calorias-ajustada}]
+                (swap! alimentos conj registro)
+                {:status 201 :body {:mensagem "Alimento registrado."
+                                    :dados registro}})
+              {:status 400 :body {:erro "Dados insuficientes para calcular calorias."}}))
+          {:status 400 :body {:erro "Opção inválida."}}))
 
       :else
-      (let [usuarioCompleto (assoc (dissoc usuario :data) :id id :senha senha)]
-        (swap! state update :usuarios conj usuarioCompleto)
-        {:status 201 :body {:msg "Usuario registrado com sucesso"}}))))
-
-(defn login [credenciais]
-  (let [{:keys [id senha]} credenciais
-        usuario (some #(when (= id (:id %)) %) (:usuarios @state))]
-    (if (and usuario (= senha (:senha usuario)))
-      {:status 200 :body {:msg "Login bem-sucedido"}}
-      {:status 401 :body {:erro "ID ou senha invalidos"}})))
-
-(defn consultarUsuario [id]
-  (let [usuario (some #(when (= id (:id %)) %) (:usuarios @state))]
-    (if usuario
-      {:status 200 :body (dissoc usuario :senha)}
-      {:status 404 :body {:erro "Usuario nao encontrado"}})))
+      {:status 400 :body {:erro "Requisição mal formatada."}})))
 
 
-(defn registrarAlimento [dados]
-  (let [{:keys [id descricao quantidade indice]} dados
-        alimentos (ali/buscar-calorias descricao)
-        alimento (nth alimentos indice nil)]
-    (if (and alimento quantidade)
-      (let [calorias (ali/calcular-calorias alimento quantidade)
-            registro {:id id
-                      :descricao (:descricao alimento)
-                      :quantidade quantidade
-                      :calorias calorias
-                      :data (todayStr)}]
-        (swap! state update :alimentos conj registro)
-        {:status 201 :body {:msg "Alimento registrado com sucesso" :registro registro}})
-      {:status 400 :body {:erro "Descricao, indice ou quantidade invalida"}})))
-
-(defn registrarExercicio [dados]
-  (let [{:keys [id atividade duracao indice]} dados
-        opcoes (ex/calorias-queimadas atividade duracao)
-        opcao (nth opcoes indice nil)]
-    (if (and opcao (:total_calories opcao))
-      (let [registro {:id id
-                      :atividade (:name opcao)
-                      :duracao duracao
-                      :calorias (:total_calories opcao)
-                      :data (todayStr)}]
-        (swap! state update :exercicios conj registro)
-        {:status 201 :body {:msg "Exercicio registrado com sucesso" :registro registro}})
-      {:status 400 :body {:erro "Atividade invalida ou nao encontrada"}})))
+;; --------------------------
+;; Exercícios
+;; --------------------------
 
 
-(defn filtrarPorPeriodo [registros dataInicio dataFim]
-  (filter
-    (fn [{:keys [data]}]
-      (let [d (parseDate data)
-            dInicio (parseDate dataInicio)
-            dFim (parseDate dataFim)]
-        (and d
-             (or (not dInicio) (not (t/before? d dInicio)))
-             (or (not dFim) (not (t/after? d dFim))))))
-    registros))
+(def api-key "MU8Ke7SzVWokf/dhBmEC2Q==zKLiuakEi9dKKX6M")
 
-(defn extrato [data-inicio data-fim]
-  (let [{:keys [alimentos exercicios]} @state
-        alimentosFiltrados (filtrarPorPeriodo alimentos data-inicio data-fim)
-        exerciciosFiltrados (filtrarPorPeriodo exercicios data-inicio data-fim)]
-    {:status 200
-     :body {:alimentos alimentosFiltrados
-            :exercicios exerciciosFiltrados}}))
-
-(defn extrair-kcal [caloria-str]
+(defn calorias-queimadas [atividade duracao]
   (try
-    (if (string? caloria-str)
-      (let [match (re-find #"([\d]+[.,]?[\d]*)\s*kcal" caloria-str)]
-        (if-let [valor (second match)]
-          (Double/parseDouble (str/replace valor "," "."))
-          0.0))
-      (double caloria-str)) ; já é número
-    (catch Exception _ 0.0)))
+    (let [url "https://api.api-ninjas.com/v1/caloriesburned"
+          resposta (client/get url
+                               {:headers {"X-Api-Key" api-key}
+                                :query-params {"activity" atividade
+                                               "duration" (str duracao)}
+                                :as :json})
+          opcoes (:body resposta)]
+      opcoes)
+    (catch Exception e
+      (println "Erro ao consultar API:" (.getMessage e))
+      nil)))
 
 
-(defn saldo [data-inicio data-fim]
-  (let [{:keys [alimentos exercicios]} @state
-        alimentosFiltrados (filtrarPorPeriodo alimentos data-inicio data-fim)
-        exerciciosFiltrados (filtrarPorPeriodo exercicios data-inicio data-fim)
-        caloriasConsumidas (reduce + (map #(extrair-kcal (:calorias %)) alimentosFiltrados))
-        caloriasGastas (reduce + (map :calorias exerciciosFiltrados))]
-    {:status 200
-     :body {:saldo (format "%.2f"(- caloriasConsumidas caloriasGastas))}}))
+(defn registrar-exercicio [req]
+  (let [{:keys [atividade duracao opcao]} (:body req)
+        resultados (calorias-queimadas atividade duracao)]
+
+    (cond
+      ;; Se não houver resultados
+      (empty? resultados)
+      {:status 404 :body {:erro "Nenhum exercício encontrado com essa descrição."}}
+
+      ;; Etapa 1: só descrição
+      (and atividade (nil? duracao) (nil? opcao))
+      {:status 200
+       :body {:opcoes (map-indexed (fn [idx item]
+                                     {:id idx
+                                      :nome (:name item)
+                                      :calorias (:calories_per_hour item)})
+                                   resultados)}}
+
+      ;; Etapa 2: usuário seleciona uma opção e envia duração
+      (and (some? opcao) (some? duracao))
+      (let [idx (Integer/parseInt (str opcao))
+            item (nth resultados idx nil)]
+        (if item
+          (let [calorias-hora (:calories_per_hour item)
+                calorias-ajustada (* (/ duracao 60.0) calorias-hora)
+                registro {:atividade (:name item)
+                          :duracao duracao
+                          :calorias calorias-ajustada}]
+            (swap! exercicios conj registro)
+            {:status 201 :body {:mensagem "Exercício registrado."
+                                :dados registro}})
+          {:status 400 :body {:erro "Opção inválida."}}))
+
+      :else
+      {:status 400 :body {:erro "Requisição mal formatada."}})))
+
+
+;; --------------------------
+;; Relatórios
+;; --------------------------
+
+(defn obter-extrato [_]
+  {:status 200
+   :body {:alimentos @alimentos
+          :exercicios @exercicios}})
 
 
 
-(defroutes appRoutes
-           (POST "/usuario" req (registrarUsuario (:body req)))
-           (POST "/login" req (login (:body req)))
-           (GET "/usuario/:id" [id] (consultarUsuario id))
+;; Verifica se há usuário cadastrado
+(defn usuario-existe? [_]
+  (if @usuario
+    {:status 200 :body {:existe true :usuario @usuario}}
+    {:status 200 :body {:existe false}}))
 
-           (POST "/alimento" req (registrarAlimento (:body req)))
-           (POST "/exercicio" req (registrarExercicio (:body req)))
 
-           (GET "/extrato" [data-inicio data-fim] (extrato data-inicio data-fim))
-           (GET "/saldo" [data-inicio data-fim] (saldo data-inicio data-fim))
-           (GET "/debug/state" []
-             {:status 200
-              :body @state})
+(defn obter-estado [_]
+  {:status 200
+   :body {:usuario @usuario
+          :alimentos @alimentos
+          :exercicios @exercicios}})
 
-           (route/not-found {:status 404 :body {:error "Not found"}}))
+;; --------------------------
+;; Rotas
+;; --------------------------
+
+(defroutes app-routes
+           (POST "/usuario" [] registrar-usuario)
+           (GET "/usuario" [] usuario-existe?)
+
+           ;; Alimentos
+           (POST "/alimento" [] registrar-alimento)
+
+           ;; Exercícios
+           (POST "/exercicio" [] registrar-exercicio)
+
+           ;; Relatórios
+           (GET "/extrato" [] obter-extrato)
+           ;(GET "/saldo" [] (fn [req] (obter-saldo req)))
+
+           (GET "/estado" [] obter-estado)
+
+           ;; Not found
+           (route/not-found {:status 404 :body {:erro "Endpoint não encontrado"}}))
 
 (def app
-  (-> appRoutes
+  (-> app-routes
       (wrap-json-body {:keywords? true})
       wrap-json-response))
 
+;; --------------------------
+;; Inicialização
+;; --------------------------
+
 (defn -main []
-  (run-jetty app {:port 3000 :join? false}))
+  (jetty/run-jetty app {:port 3000 :join? false}))

@@ -1,8 +1,7 @@
 (ns fit.alimentos
   (:require [clj-http.client :as client]
             [cheshire.core :as json]
-            [clojure.string :as str])
-  (:gen-class))
+            [clojure.string :as str]))
 
 (defn buscar-calorias [descricao]
   (let [url (str "https://caloriasporalimentoapi.herokuapp.com/api/calorias/?descricao="
@@ -34,7 +33,6 @@
                 calorias-ajustada))
       (format "%s - Dados insuficientes para calculo (calorias: %s, gramas: %s)"
               descricao calorias-totais gramas-totais))))
-
 
 (defn -main []
   (println "Digite o nome do alimento:")
