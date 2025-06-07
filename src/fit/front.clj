@@ -58,7 +58,7 @@
 
 
 (defn imprimir-opcoes [opcoes imprimir-fn]
-  (mapv imprimir-fn opcoes))
+  (doall (map imprimir-fn opcoes)))
 
 (defn registrar-alimento []
   (println "Digite o nome do alimento:")
@@ -137,14 +137,18 @@
       (println "\n--- Alimentos ---")
       (if (empty? alimentos)
         (println "Nenhum alimento registrado no periodo.")
-        (doseq [{:keys [descricao gramas calorias data]} alimentos]
-          (println (str "- " descricao ", " gramas "g, " (format "%.2f" calorias) " kcal | [" data "]"))))
+        (doall
+          (map (fn [{:keys [descricao gramas calorias data]}]
+                 (println (str "- " descricao ", " gramas "g, " (format "%.2f" calorias) " kcal | [" data "]")))
+               alimentos)))
 
       (println "\n--- Exercicios ---")
       (if (empty? exercicios)
         (println "Nenhum exercicio registrado no periodo.")
-        (doseq [{:keys [atividade duracao calorias data]} exercicios]
-          (println (str "- " atividade ", " duracao " min, " (format "%.2f" calorias) " kcal | [" data "]")))))))
+        (doall
+          (map (fn [{:keys [atividade duracao calorias data]}]
+                 (println (str "- " atividade ", " duracao " min, " (format "%.2f" calorias) " kcal | [" data "]")))
+               exercicios))))))
 
 
 (defn ver-saldo []
@@ -163,23 +167,23 @@
 
 
 (defn menu []
-  (loop []
-    (println "\n--- Menu Principal ---")
-    (println "1 - Ver informacoes do usuario")
-    (println "2 - Registrar alimento consumido")
-    (println "3 - Registrar exercicio realizado")
-    (println "4 - Ver extrato")
-    (println "5 - Ver saldo de calorias")
-    (println "0 - Sair")
-    (print "Escolha uma opcao: ") (flush)
-    (case (read-line)
-      "1" (do (mostrar-usuario) (recur))
-      "2" (do (registrar-alimento) (recur))
-      "3" (do (registrar-exercicio) (recur))
-      "4" (do (ver-extrato) (recur))
-      "5" (do (ver-saldo) (recur))
-      "0" (println "Saindo...")
-      (do (println "Opcao invalida!") (recur)))))
+  (println "\n--- Menu Principal ---")
+  (println "1 - Ver informacoes do usuario")
+  (println "2 - Registrar alimento consumido")
+  (println "3 - Registrar exercicio realizado")
+  (println "4 - Ver extrato")
+  (println "5 - Ver saldo de calorias")
+  (println "0 - Sair")
+  (print "Escolha uma opcao: ") (flush)
+  (let [opcao (read-line)]
+    (cond
+      (= opcao "1") (do (mostrar-usuario) (menu))
+      (= opcao "2") (do (registrar-alimento) (menu))
+      (= opcao "3") (do (registrar-exercicio) (menu))
+      (= opcao "4") (do (ver-extrato) (menu))
+      (= opcao "5") (do (ver-saldo) (menu))
+      (= opcao "0") (println "Saindo...")
+      :else (do (println "Opcao invalida!") (menu)))))
 
 (defn -main []
   (if (usuario-existe?)

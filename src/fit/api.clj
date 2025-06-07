@@ -6,7 +6,8 @@
             [ring.middleware.params :refer [wrap-params]]
             [cheshire.core :as json]
             [clj-http.client :as client]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [fit.traducao :as trad]))
 
 ;; --------------------------
 ;; Estado da aplicação (em memória)
@@ -112,7 +113,8 @@
 
 (defn registrar-exercicio [req]
   (let [{:keys [atividade duracao opcao data]} (:body req)
-        resultados (calorias-queimadas atividade duracao)]
+        atividade-en (trad/portugues-ingles atividade)
+        resultados (calorias-queimadas atividade-en duracao)]
 
     (cond
       (empty? resultados)
@@ -120,11 +122,13 @@
 
       (and atividade (nil? duracao) (nil? opcao))
       {:status 200
-       :body {:opcoes (map-indexed (fn [idx item]
-                                     {:id idx
-                                      :nome (:name item)
-                                      :calorias (:calories_per_hour item)})
-                                   resultados)}}
+       :body {:opcoes (doall
+                        (map-indexed
+                          (fn [idx item]
+                            {:id idx
+                             :nome (trad/ingles-portugues (:name item))
+                             :calorias (:calories_per_hour item)})
+                          resultados))}}
 
       (and (some? opcao) (some? duracao))
       (let [idx (Integer/parseInt (str opcao))
