@@ -3,6 +3,7 @@
             [compojure.route :as route]
             [ring.adapter.jetty :as jetty]
             [ring.middleware.json :refer [wrap-json-body wrap-json-response]]
+            [ring.middleware.params :refer [wrap-params]]
             [cheshire.core :as json]
             [clj-http.client :as client]
             [clojure.string :as str]))
@@ -47,15 +48,13 @@
       nil)))
 
 (defn registrar-alimento [req]
-  (let [{:keys [descricao gramas opcao]} (:body req)
+  (let [{:keys [descricao gramas opcao data]} (:body req)
         resultados (buscar-calorias descricao)]
 
     (cond
-      ;; Se não houver resultados
       (empty? resultados)
       {:status 404 :body {:erro "Nenhum alimento encontrado com essa descrição."}}
 
-      ;; Etapa 1: só descrição, retorna opções ao usuário
       (and descricao (nil? gramas) (nil? opcao))
       {:status 200
        :body {:opcoes (map-indexed (fn [idx item]
@@ -65,7 +64,6 @@
                                       :calorias (:calorias item)})
                                    resultados)}}
 
-      ;; Etapa 2: descrição, id da opção escolhida e gramas
       (and (some? gramas) (some? opcao))
       (let [idx (Integer/parseInt (str opcao))
             item (nth resultados idx nil)]
@@ -78,7 +76,8 @@
                     calorias-ajustada (* calorias-por-grama gramas)
                     registro {:descricao descricao
                               :gramas gramas
-                              :calorias calorias-ajustada}]
+                              :calorias calorias-ajustada
+                              :data data}]
                 (swap! alimentos conj registro)
                 {:status 201 :body {:mensagem "Alimento registrado."
                                     :dados registro}})
@@ -112,15 +111,13 @@
 
 
 (defn registrar-exercicio [req]
-  (let [{:keys [atividade duracao opcao]} (:body req)
+  (let [{:keys [atividade duracao opcao data]} (:body req)
         resultados (calorias-queimadas atividade duracao)]
 
     (cond
-      ;; Se não houver resultados
       (empty? resultados)
       {:status 404 :body {:erro "Nenhum exercício encontrado com essa descrição."}}
 
-      ;; Etapa 1: só descrição
       (and atividade (nil? duracao) (nil? opcao))
       {:status 200
        :body {:opcoes (map-indexed (fn [idx item]
@@ -129,7 +126,6 @@
                                       :calorias (:calories_per_hour item)})
                                    resultados)}}
 
-      ;; Etapa 2: usuário seleciona uma opção e envia duração
       (and (some? opcao) (some? duracao))
       (let [idx (Integer/parseInt (str opcao))
             item (nth resultados idx nil)]
@@ -138,7 +134,8 @@
                 calorias-ajustada (* (/ duracao 60.0) calorias-hora)
                 registro {:atividade (:name item)
                           :duracao duracao
-                          :calorias calorias-ajustada}]
+                          :calorias calorias-ajustada
+                          :data data}]
             (swap! exercicios conj registro)
             {:status 201 :body {:mensagem "Exercício registrado."
                                 :dados registro}})
@@ -148,15 +145,37 @@
       {:status 400 :body {:erro "Requisição mal formatada."}})))
 
 
+
 ;; --------------------------
 ;; Relatórios
 ;; --------------------------
 
-(defn obter-extrato [_]
-  {:status 200
-   :body {:alimentos @alimentos
-          :exercicios @exercicios}})
+(defn parse-data [s]
+  ;; Recebe string "yyyy-MM-dd" e retorna java.time.LocalDate
+  (try
+    (java.time.LocalDate/parse s)
+    (catch Exception _ nil)))
 
+(defn filtrar-por-data [registros inicio fim]
+  (let [inicio (or (parse-data inicio) (java.time.LocalDate/of 1970 1 1))
+        fim (or (parse-data fim) (java.time.LocalDate/now))]
+    (filter (fn [r]
+              (let [data-r (parse-data (:data r))]
+                (and data-r
+                     (not (.isBefore data-r inicio))
+                     (not (.isAfter data-r fim)))))
+            registros)))
+
+(defn obter-extrato [req]
+  (let [params (:query-params req)
+        _ (println "Query params recebidos:" params)
+        inicio (get params "inicio")
+        fim (get params "fim")
+        alimentos-filtrados (filtrar-por-data @alimentos inicio fim)
+        exercicios-filtrados (filtrar-por-data @exercicios inicio fim)]
+    {:status 200
+     :body {:alimentos (vec alimentos-filtrados)
+            :exercicios (vec exercicios-filtrados)}}))
 
 
 ;; Verifica se há usuário cadastrado
@@ -172,11 +191,30 @@
           :alimentos @alimentos
           :exercicios @exercicios}})
 
+
+(defn obter-saldo [req]
+  (let [params (:query-params req)
+        inicio (get params "inicio")
+        fim (get params "fim")
+        alimentos-filtrados (filtrar-por-data @alimentos inicio fim)
+        exercicios-filtrados (filtrar-por-data @exercicios inicio fim)
+
+        total-consumido (double (reduce + (map #(double (or (:calorias %) 0.0)) alimentos-filtrados)))
+        total-queimado  (double (reduce + (map #(double (or (:calorias %) 0.0)) exercicios-filtrados)))
+        saldo           (double (- total-consumido total-queimado))]
+
+    {:status 200
+     :body {:consumido (format "%.2f" total-consumido)
+            :queimado  (format "%.2f" total-queimado)
+            :saldo     (format "%.2f" saldo)}}))
+
+
 ;; --------------------------
 ;; Rotas
 ;; --------------------------
 
 (defroutes app-routes
+           ;; Usuario
            (POST "/usuario" [] registrar-usuario)
            (GET "/usuario" [] usuario-existe?)
 
@@ -187,8 +225,8 @@
            (POST "/exercicio" [] registrar-exercicio)
 
            ;; Relatórios
-           (GET "/extrato" [] obter-extrato)
-           ;(GET "/saldo" [] (fn [req] (obter-saldo req)))
+           (GET "/extrato" req (obter-extrato req))
+           (GET "/saldo" req (obter-saldo req))
 
            (GET "/estado" [] obter-estado)
 
@@ -197,6 +235,7 @@
 
 (def app
   (-> app-routes
+      wrap-params
       (wrap-json-body {:keywords? true})
       wrap-json-response))
 
